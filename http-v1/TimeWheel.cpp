@@ -43,21 +43,12 @@ private:
     ReleaseInfo _release;   //这个是回调用于删除map中的信息避免内存泄漏
 public:
     TimeTask(const uint64_t id,const uint32_t timeout,uint32_t delay,const To_Death_Cb& death_task)
-        :_id(id)
-        ,_timeout(timeout)
-        ,_death_task(death_task)
-        ,_delay(delay)
-
-    {
-
-    }
-
+        :_id(id),_timeout(timeout),_death_task(death_task),_delay(delay) {}
     ~TimeTask()
     {
         _death_task();
         if(_release)
         _release();
-
     }
 
     bool SetRelease(ReleaseInfo release)
@@ -65,15 +56,9 @@ public:
         _release = release;
         return true;
     }
-    uint32_t GetTimeOut()
-    {
-        return _timeout;
-    }
+    uint32_t GetTimeOut() { return _timeout; }
 
-    uint32_t GetStdDelay()
-    {
-        return _delay;
-    }
+    uint32_t GetStdDelay() { return _delay; }
 };
 
 
@@ -101,16 +86,8 @@ private:
     }
 public:
     TimeWheel(uint64_t  capacity)
-        :_capacity(capacity)
-        ,_ticks(0)
-        ,_tasks(capacity)
-    {
-        
-    }
-    ~TimeWheel()
-    {
-        
-    }
+        :_capacity(capacity),_ticks(0),_tasks(capacity) { }
+    ~TimeWheel() { }
 
     int Reflash(uint64_t id)
     {
@@ -159,21 +136,9 @@ class Test
 {
 public:
     int _id;
-    Test(int  id)
-    {
-        _id = id;
-    }
-    
-    void DeathTask()
-    {
-        std::cout << "task over: " << _id << std::endl;
-    }
-
-    ~Test()
-    {
-        std::cout << "已经析构了" <<  std::endl;
-    }
-
+    Test(int  id) { _id = id; }
+    void DeathTask() { std::cout << "task over: " << _id << std::endl; }
+    ~Test() { std::cout << "已经析构了" <<  std::endl; }
 };
 
 
