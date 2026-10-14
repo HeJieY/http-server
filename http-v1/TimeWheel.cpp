@@ -39,36 +39,38 @@ private:
     uint64_t _id;           //用于唯一标识任务
     uint32_t _timeout;      //用于标识任务的最大存活时间
     uint32_t _delay;        //用于表示每次应当延长寿命多久
+    uint32_t _dead_index;     //用于表示任务将在哪一秒死亡
     To_Death_Cb _death_task;//用于表示时间到后自动执行的任务 
     ReleaseInfo _release;   //这个是回调用于删除map中的信息避免内存泄漏
 public:
-    TimeTask(const uint64_t id,const uint32_t timeout,uint32_t delay,const To_Death_Cb& death_task)
-        :_id(id),_timeout(timeout),_death_task(death_task),_delay(delay) {}
+    TimeTask(const uint64_t id,const uint32_t timeout,uint32_t delay,const uint32_t dead_index ,const To_Death_Cb& death_task)
+        :_id(id),_timeout(timeout),_death_task(death_task),_delay(delay),_dead_index(dead_index) {}
     ~TimeTask()
     {
         _death_task();
         if(_release)
         _release();
     }
-
     bool SetRelease(ReleaseInfo release)
     {
         _release = release;
         return true;
     }
-    uint32_t GetTimeOut() { return _timeout; }
-
-    uint32_t GetStdDelay() { return _delay; }
+    uint32_t GetTimeOut() { return _timeout; } const
+    uint32_t GetStdDelay() { return _delay; } const
+    uint32_t GetDeadIndex() { return _dead_index; } const
+    void SetDeadTick(uint32_t dead_index) { _dead_index = dead_index; }
 };
 
 
 class TimeWheel
 {
+    //C++ 成员按照声明顺序初始化调用构造,按照声明顺序的逆序调用析构
     using STaskPtr = std::shared_ptr<TimeTask>;
     using WTaskPtr = std::weak_ptr<TimeTask>;
 private:
-    std::vector<std::vector<STaskPtr>> _tasks;  //表示所有待办任务
     std::unordered_map<uint64_t,WTaskPtr> _map; //表示id与任务之间的联系
+    std::vector<std::vector<STaskPtr>> _tasks;  //表示所有待办任务
     uint64_t _capacity;                         //表示时间轮的最大容量
     uint32_t _ticks;                            //表示秒针 
 private:
@@ -99,7 +101,8 @@ public:
             //share_ptr不会共享引用计数
             //_tasks[pos].push_back(STaskPtr(it->second.lock()));            
             STaskPtr ptr = it->second.lock();
-            int pos = (_ticks + ptr->GetStdDelay()) % _capacity;
+            uint32_t pos = (ptr->GetDeadIndex() + ptr->GetStdDelay()) % _capacity;
+            ptr->SetDeadTick(pos);
             _tasks[pos].push_back(ptr); 
         }
         else
@@ -108,11 +111,11 @@ public:
         }
         return 0;
     }
-    bool AddTask(const uint64_t id,const uint32_t timeout,int delay,const To_Death_Cb& cb)
+    bool AddTask(const uint64_t id,const uint32_t timeout,uint32_t delay,const To_Death_Cb& cb)
     {
         //找到对应位置,添加要执行的任务去tasks中
-        int pos = (_ticks + timeout) % _capacity;
-        STaskPtr ptr = std::make_shared<TimeTask>(id,timeout,delay,cb);
+        uint64_t pos = (_ticks + timeout) % _capacity;
+        STaskPtr ptr = std::make_shared<TimeTask>(id,timeout,delay,pos,cb);
         ptr->SetRelease(std::bind(&TimeWheel::RemoveTask,this,id));
         //这么写是不对的c++标准规定:非静态成员函数(不含this的)函数名不会自动强转成函数指针
         // ptr->SetRelease(std::bind(RemoveTask,this,id));
