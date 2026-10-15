@@ -9,20 +9,30 @@
  * 3.void* 加法是未定义问题,步长是不确定的
  * Copyright (c) 2026 by HeJieY, All Rights Reserved. 
  */
-
-//
+#pragma once
+#include <cerrno>
+#include <cstddef>
 #include<cstdio>
-#include<cstring>
+#include <regex>
+#include<string>
 #include<ctime>
 #include<cstring>
 #include<algorithm>
 #include <cstdint>
-#include<iostream>
 #include <sys/types.h>
 #include<vector>
 #include<cstdint>
 #include<cassert>
+#include<sys/socket.h>
+#include<netinet/in.h>
+#include<arpa/inet.h>
+#include<unistd.h>
+#include<fcntl.h>
+
 #define BUFFER_SIZE 1024
+#define INF 0
+#define DBG 1
+#define ERR 2
 #define LOG_LEVEL INF
 
 #define LOG(level, fmt, ...)                                           \
@@ -144,3 +154,129 @@ private:
     std::vector<char> _buffer; 
 };
 
+class Socket
+{
+private:
+    int _socketfd;
+private:
+
+public:
+    Socket():_socketfd(-1) { }
+    Socket(int socketfd):_socketfd(socketfd) { } 
+    ~Socket() { }
+    int CreateSocket() 
+    {
+        _socketfd = socket(AF_INET,SOCK_STREAM,0);
+        if(_socketfd < 0) 
+        { 
+            LOG(ERR,"Socketfd create error!"); 
+            return -1;
+        }
+        return _socketfd;
+    }
+    int Bind(const std::string& ip,uint16_t port) 
+    {
+        struct sockaddr_in addr;
+        memset(&addr,0,sizeof(addr));
+
+        addr.sin_family = AF_INET;
+        inet_pton(AF_INET, ip.c_str(), &addr.sin_addr);
+        addr.sin_port  = htons(port);
+        uint64_t len = sizeof(addr);
+        int ret = bind(_socketfd,(struct sockaddr*)&addr,len);
+        if(ret < 0) 
+        { 
+            LOG(ERR,"Bind error!");
+        }
+        return ret;
+    }
+    bool CreateTcpServer(std::string& ip,uint16_t port)
+    {
+        CreateSocket();
+        Bind(ip, port);
+        //设置地址复用
+    }
+    bool CreateClientConnect()
+    {
+        
+    }
+    int ConnectToServer(const struct sockaddr* addr,socklen_t len)
+    {
+        int socketfd = connect(_socketfd,addr,len);
+        if(socketfd < 0)
+        {
+            LOG(ERR,"Connect error!");
+        }
+        return socketfd;
+    }
+    bool CreateListenConnect()
+    {
+        int ret = listen(_socketfd,8);
+        if(ret < 0)
+        {
+            LOG(ERR,"Listen socket create error!");
+            return false;
+        }
+        return true;
+    }
+    //暂时调整为返回值为-1,-2,-3,之后在在进行其他调整
+    int GetNewConnect()
+    {
+        struct sockaddr addr;
+        socklen_t len = sizeof(addr); 
+        memset(&addr,0,len);
+        int ret = accept(_socketfd,&addr,&len);
+        if(errno == EAGAIN || errno == EWOULDBLOCK)
+        {
+            return -1;
+        }
+        else if(errno == EINTR)
+        {
+            return -2;
+        }
+        else 
+        {
+            return -3;
+        }        
+    }
+    bool Close()
+    {
+        close(_socketfd);
+        return  true;
+    }
+    ssize_t Send(const char* buffer,size_t len,int flag = 0)
+    {
+        ssize_t n = send(_socketfd,buffer,len,flag);
+        if(errno ==EAGAIN || errno == EWOULDBLOCK)
+        {
+            
+        }
+        else if(n == EINTR)
+        {
+
+        }
+        else 
+        {
+            
+        }
+    }
+    ssize_t SendAsNon(const char* buffer,size_t len)
+    {
+        Send(buffer, len,MSG_DONTWAIT);
+    }
+    ssize_t Recv()
+    {
+
+    }
+    int FdCntl(int op,int addFlag)
+    {
+        int flag = fcntl(_socketfd,F_GETFL,0);
+        return fcntl(_socketfd, op, flag | addFlag); 
+    }
+    bool SetNonBlock()
+    {
+        FdCntl(F_SETFD,O_NONBLOCK);
+        return true;
+    }
+
+};
