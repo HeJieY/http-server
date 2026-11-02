@@ -1,7 +1,7 @@
 /*
  * @Author: HejieY 2145381080@qq.com
  * @Date: 2026-10-13 19:32:26
- * @FilePath: /Project/muduo-http-server/source/Server.hpp
+ * @FilePath: /muduo-http-server/source/Server.hpp
  * @Description: 这个类是高性能服务器的缓冲区,核心思想是使用vector<char>来存储数据,双指针维护空间
  * @Questions: 
  * 1.为什么类内设计时都是用地址而不用下标？：系统调用参数为地址，用地址方便与系统调用协调
@@ -40,6 +40,7 @@ enum ExitCode
     LISTEN_SOCKET_CREATE_ERROR,
     EPOLL_CTL_ERROR,
     EPOLL_WAIT_ERROR,
+    ACCEPT_ERROR,
 };
 
 #define BUFFER_SIZE 1024
@@ -63,6 +64,7 @@ enum ExitCode
 #define INF_LOG(fmt, ...) LOG(INF, fmt, ##__VA_ARGS__)
 #define DBG_LOG(fmt, ...) LOG(DBG, fmt, ##__VA_ARGS__)
 #define ERR_LOG(fmt, ...) LOG(ERR, fmt, ##__VA_ARGS__)
+
 class Buffer
 {
 public:
@@ -179,6 +181,11 @@ public:
     Socket(int socketfd):_socketfd(socketfd) { } 
 
     ~Socket() { }
+
+    int GetSocket()
+    {
+        return _socketfd;
+    }
 
     int CreateSocket() 
     {
@@ -390,6 +397,7 @@ public:
     }
 };
 
+
 #define MAX_EVENTS 1024
 class Poller
 {
@@ -417,11 +425,18 @@ public:
         }
     }
     ~Poller() {}
-    void UpdateEvent(Channel* channel,int op) 
+    void UpdateEvent(Channel* channel) 
     {
+        int ret;
         if(HaveChannel(channel) == false)
+        {
             _map[channel->GetFd()] = channel;
-        int ret = Update(channel, EPOLL_CTL_MOD);
+            ret = Update(channel, EPOLL_CTL_ADD);
+        }
+        else 
+        {
+            ret = Update(channel, EPOLL_CTL_MOD);
+        }
         if(ret < 0) 
         {
             ERR_LOG("Epoll control error!");
@@ -472,4 +487,7 @@ public:
         }
     }
 };
+
+
+
 
