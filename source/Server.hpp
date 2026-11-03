@@ -31,6 +31,7 @@
 #include<arpa/inet.h>
 #include<unistd.h>
 #include<fcntl.h>
+#include<iostream>
 
 enum ExitCode
 {
@@ -219,7 +220,7 @@ public:
         setsockopt(_socketfd,SOL_SOCKET,SO_REUSEADDR,&op,sizeof(op));
     }
 
-    bool CreateClientConnect(std::string& ip,uint16_t  port)
+    bool CreateClientConnect(const std::string& ip,uint16_t  port)
     {   
         if(CreateSocket()  < 0) { exit(ExitCode::CREATE_SOCKET_ERROR); }
         sockaddr_in addr;
@@ -485,6 +486,13 @@ public:
             }
             return ret;
         }
+    }
+
+    bool RemoveChannel(int fd)
+    {
+        delete _map[fd];
+        _map.erase(fd);
+        return true;
     }
 };
 
