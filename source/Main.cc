@@ -72,21 +72,39 @@ int main()
     
     Socket lisSocket;
     Poller poller;
-    Channel* lisChannel =  new Channel(lisSocket.GetSocket());
-    std::vector<Channel*> active;
+    std::vector<Channel*>* active;
     lisSocket.CreateSocket();
-    lisSocket.Bind("118.89.172.104",8081);
+    lisSocket.Bind("0.0.0.0",8081); 
     lisSocket.CreateListenConnect();
-    
+    Channel* lisChannel =  new Channel(lisSocket.GetSocket());
 
     lisChannel->EnableRead();
     lisChannel->SetReadCallback(std::bind(HandleListenRead,lisSocket,poller));
-
-    poller.UpdateEvent(lisChannel);
-    poller.Poll(active);
-
-    for(Channel* channel  : active)
+    int ret = poller.UpdateEvent(lisChannel);
+    if(ret < 0)
     {
-        channel->HandleEvent(); 
+        ERR_LOG("Update event fail");
     }
+    while(1)
+    {
+        int ret = poller.Poll(active);
+        if(ret == 0) 
+        { 
+            INF_LOG("No event happen!"); 
+        }
+        else if(ret == -1)
+        {
+            INF_LOG("The call was interrupted by a singal!");
+        }
+        else
+        {
+            for(Channel* channel : *active)
+            {
+                channel->HandleEvent(); 
+            }
+        }
+        sleep(1);
+    }
+
+    
 }

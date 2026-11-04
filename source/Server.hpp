@@ -48,7 +48,7 @@ enum ExitCode
 #define INF 0
 #define DBG 1
 #define ERR 2
-#define LOG_LEVEL ERR
+#define LOG_LEVEL INF
 
 #define LOG(level, fmt, ...)                                           \
     do {                                                               \
@@ -211,6 +211,7 @@ public:
         if(ret < 0) 
         { 
             ERR_LOG("Bind error!");
+            perror("bind error");
         }
         return ret;
     }
@@ -411,8 +412,8 @@ private:
         struct epoll_event event;
         event.data.fd = channel->GetFd();
         event.events = channel->GetEvent();
-        int ret = epoll_ctl(_epollfd,op,channel->GetFd(),_events);
-        return ret;
+        INF_LOG("Add a event");
+        return epoll_ctl(_epollfd,op,channel->GetFd(),&event);
     }
 public:
     Poller()
@@ -424,9 +425,10 @@ public:
             ERR_LOG("Epollfd create fail!");
             exit(ExitCode::EPOLLFD_CREATE_ERROR);
         }
+        // std::cout << "Epoll init" << std::endl;
     }
     ~Poller() {}
-    void UpdateEvent(Channel* channel) 
+    int UpdateEvent(Channel* channel) 
     {
         int ret;
         if(HaveChannel(channel) == false)
@@ -441,8 +443,10 @@ public:
         if(ret < 0) 
         {
             ERR_LOG("Epoll control error!");
+            perror("");
             exit(ExitCode::EPOLL_CTL_ERROR);
         }
+        return ret;
     }
     bool HaveChannel(Channel* channel)
     {
@@ -462,10 +466,14 @@ public:
         }
 
     }
-    int Poll(std::vector<Channel*> active)
+    int Poll(std::vector<Channel*>* active)
     {
         int ret = epoll_wait(_epollfd, _events, MAX_EVENTS, 0);
-        if(ret < 0)
+        if(ret == 0)
+        {
+            return 0;
+        }
+        else if(ret < 0)
         {
             if(errno ==EAGAIN) { return -1; }
             else { exit(ExitCode::EPOLL_WAIT_ERROR); }
@@ -477,7 +485,7 @@ public:
                 auto it = _map.find(ev.data.fd);
                 if(it != _map.end())
                 {
-                    active.push_back(it->second);
+                    active->push_back(it->second);
                 }
                 else 
                 {
