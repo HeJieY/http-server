@@ -13,9 +13,11 @@
  * Copyright (c) 2026 by HeJieY, All Rights Reserved. 
  */
 #include "Server.hpp"
+#include <cstring>
 #include <functional>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <vector>
 
 int  Acceptor(int lisfd)
 {
@@ -72,14 +74,16 @@ int main()
     
     Socket lisSocket;
     Poller poller;
-    std::vector<Channel*>* active;
+    std::vector<Channel*>* active = new std::vector<Channel*>();
+    active->reserve(MAX_EVENTS);
     lisSocket.CreateSocket();
     lisSocket.Bind("0.0.0.0",8081); 
     lisSocket.CreateListenConnect();
     Channel* lisChannel =  new Channel(lisSocket.GetSocket());
 
     lisChannel->EnableRead();
-    lisChannel->SetReadCallback(std::bind(HandleListenRead,lisSocket,poller));
+    //bind函数里面的参数是对上文变量的拷贝，回调函数是对该拷贝的引用原文变量没有发生变化
+    lisChannel->SetReadCallback(std::bind(HandleListenRead,std::ref(lisSocket),std::ref(poller)));
     int ret = poller.UpdateEvent(lisChannel);
     if(ret < 0)
     {
@@ -87,6 +91,8 @@ int main()
     }
     while(1)
     {
+        //记得清除任务
+        active->clear();
         int ret = poller.Poll(active);
         if(ret == 0) 
         { 
@@ -98,6 +104,7 @@ int main()
         }
         else
         {
+            
             for(Channel* channel : *active)
             {
                 channel->HandleEvent(); 

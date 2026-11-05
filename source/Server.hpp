@@ -385,7 +385,7 @@ public:
     void DisableWrite() { _events &= ~EPOLLOUT; }
     void DisableAll() { _events = 0; }
     void RemoveEvent(uint32_t event) { _events &= ~event; }
-
+    void SetRevents(uint32_t revents) { _revents = revents; }
     void HandleEvent()
     {
         if((_revents & EPOLLIN) || (_revents & EPOLLRDHUP) || (_revents & EPOLLPRI))
@@ -480,11 +480,14 @@ public:
         }
         else
         {
-            for(struct epoll_event& ev : _events)
+            for(int i=0;i<ret;i++)
             {
-                auto it = _map.find(ev.data.fd);
+                
+                auto it = _map.find(_events[i].data.fd);
                 if(it != _map.end())
                 {
+                    
+                    it->second->SetRevents(_events[i].events);
                     active->push_back(it->second);
                 }
                 else 
