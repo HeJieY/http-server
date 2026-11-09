@@ -28,8 +28,15 @@ void HandleRead(Channel* channel)
 {
     std::string buffer;
     buffer.resize(1024);
-    recv(channel->GetFd(), &buffer[0], BUFFER_SIZE,MSG_DONTWAIT);
-    std::cout << "Client say# "<< buffer.c_str()  << std::endl;
+    int ret = recv(channel->GetFd(), &buffer[0], BUFFER_SIZE,MSG_DONTWAIT);
+    if(ret < 0)
+    {
+           
+    }
+    else 
+    {   
+        std::cout << "Client say# "<< buffer.c_str()  << std::endl;
+    }
 }
 void HandleWrite(Channel* channel)
 {
@@ -47,9 +54,9 @@ void HandleEvent(Channel* channel)
 {
     
 }
-void HandleListenRead(Socket& lisSocket,Poller& poller)
+void HandleListenRead(Socket* lisSocket,Poller* poller)
 {
-    int fd =  Acceptor(lisSocket.GetSocket());
+    int fd =  Acceptor(lisSocket->GetSocket());
     if(fd  < 0)
     {
         ERR_LOG("Accept error!");
@@ -62,29 +69,29 @@ void HandleListenRead(Socket& lisSocket,Poller& poller)
     channel->EnableWrite();
     channel->SetReadCallback(std::bind(HandleRead,channel));
     channel->SetWriteCallback(std::bind(HandleWrite,channel));
-    channel->SetCloseCallback(std::bind(HandleClose,channel,&poller));
+    channel->SetCloseCallback(std::bind(HandleClose,channel,poller));
     channel->SetErrorCallback(std::bind(HandleError,channel));
     channel->SetEventCallback(std::bind(HandleEvent,channel));
-    poller.UpdateEvent(channel);    
+    poller->UpdateEvent(channel);    
 }
 
 
 int main()
 {
     
-    Socket lisSocket;
-    Poller poller;
+    Socket* lisSocket = new Socket();
+    Poller* poller = new Poller();
     std::vector<Channel*>* active = new std::vector<Channel*>();
     active->reserve(MAX_EVENTS);
-    lisSocket.CreateSocket();
-    lisSocket.Bind("0.0.0.0",8081); 
-    lisSocket.CreateListenConnect();
-    Channel* lisChannel =  new Channel(lisSocket.GetSocket());
+    lisSocket->CreateSocket();
+    lisSocket->Bind("0.0.0.0",8081); 
+    lisSocket->CreateListenConnect();
+    Channel* lisChannel =  new Channel(lisSocket->GetSocket());
 
     lisChannel->EnableRead();
     //bind函数里面的参数是对上文变量的拷贝，回调函数是对该拷贝的引用原文变量没有发生变化
-    lisChannel->SetReadCallback(std::bind(HandleListenRead,std::ref(lisSocket),std::ref(poller)));
-    int ret = poller.UpdateEvent(lisChannel);
+    lisChannel->SetReadCallback(std::bind(HandleListenRead,lisSocket,poller));
+    int ret = poller->UpdateEvent(lisChannel);
     if(ret < 0)
     {
         ERR_LOG("Update event fail");
@@ -93,7 +100,7 @@ int main()
     {
         //记得清除任务
         active->clear();
-        int ret = poller.Poll(active);
+        int ret = poller->Poll(active);
         if(ret == 0) 
         { 
             INF_LOG("No event happen!"); 

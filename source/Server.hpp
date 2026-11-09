@@ -243,10 +243,10 @@ public:
     {
         if(CreateSocket()  < 0) { exit(ExitCode::CREATE_SOCKET_ERROR); }
         //地址复用必须在bind之前
-        if(CreateListenConnect() == false) { exit(ExitCode::LISTEN_SOCKET_CREATE_ERROR); } 
         SetReuseAddress(1);
+        if(Bind(ip, port)<0) { exit(ExitCode::BIND_ERROR); }
+        if(CreateListenConnect() == false) { exit(ExitCode::LISTEN_SOCKET_CREATE_ERROR); } 
         SetNonBlock();
-        if(Bind(ip, port < 0)) { exit(ExitCode::BIND_ERROR); }
         return true;
     }
 
@@ -278,17 +278,19 @@ public:
         socklen_t len = sizeof(addr); 
         memset(&addr,0,len);
         int ret = accept(_socketfd,&addr,&len);
-        if(errno == EAGAIN || errno == EWOULDBLOCK)
+        if(ret < 0)
         {
-            return -1;
-        }
-        else if(errno == EINTR)
-        {
-            return -2;
+            if(errno == EAGAIN || errno == EWOULDBLOCK) { return -1;}
+            else if(errno == EINTR) { return -2;}
+            else 
+            {  
+                ERR_LOG("Accept error!"); 
+                exit(ExitCode::ACCEPT_ERROR);
+            }
         }
         else 
         {
-            return -3;
+            return ret;
         }        
     }
 
@@ -321,15 +323,15 @@ public:
     ssize_t Recv(char* buffer,int n,int flag = 0)
     {
         ssize_t sz = recv(_socketfd, buffer, n, flag);
-        if(n < 0)
+        if(sz < 0)
         {
             if(errno ==EAGAIN || errno == EWOULDBLOCK) { return -1; }
-            else if(n == EINTR) { return -2; }
-            else { return n; }
+            else if(errno == EINTR) { return -2; }
+            else { return sz; }
         }
         else
         {
-            return n;
+            return sz;
         }  
     }
 
@@ -346,7 +348,7 @@ public:
 
     bool SetNonBlock()
     {
-        FdCntl(F_SETFD,O_NONBLOCK);
+        FdCntl(F_SETFL,O_NONBLOCK);
         return true;
     }
 
@@ -377,7 +379,7 @@ public:
     void SetReadCallback(EventCallback readCallback) { _read_callback = readCallback; }
     void SetCloseCallback(EventCallback closeCallback) { _close_callback = closeCallback; }
     void SetErrorCallback(EventCallback errorCallback) { _error_callback = errorCallback; }
-
+    void CloseFd() { INF_LOG("Close  fd:%d",_socketfd); close(_socketfd); }
 
     void EnableRead() { _events|= EPOLLIN ;}
     void EnableWrite() { _events |= EPOLLOUT; }
@@ -454,17 +456,17 @@ public:
         if(it != _map.end()) return true;  
         return false;
     }
-    void RemoveEvent(Channel* channel)
+    void RemoveListen(Channel* channel)
     {
-        if(HaveChannel(channel) == false)
-            _map[channel->GetFd()] = channel;
+        // if(HaveChannel(channel) == false)
+        //     _map[channel->GetFd()] = channel;
         int ret = Update(channel, EPOLL_CTL_DEL);
         if(ret < 0) 
         {
             ERR_LOG("Epoll control error!");
             exit(ExitCode::EPOLL_CTL_ERROR);
         }
-
+        RemoveChannel(channel->GetFd());
     }
     int Poll(std::vector<Channel*>* active)
     {
@@ -475,7 +477,7 @@ public:
         }
         else if(ret < 0)
         {
-            if(errno ==EAGAIN) { return -1; }
+            if(errno ==EINTR) { return -1; }
             else { exit(ExitCode::EPOLL_WAIT_ERROR); }
         }
         else
@@ -501,6 +503,8 @@ public:
 
     bool RemoveChannel(int fd)
     {
+        close(fd);
+        INF_LOG("Close  fd:%d",fd);
         delete _map[fd];
         _map.erase(fd);
         return true;
