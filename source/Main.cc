@@ -18,6 +18,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <vector>
+#include<iostream>
 
 int  Acceptor(int lisfd)
 {
@@ -42,9 +43,9 @@ void HandleWrite(Channel* channel)
 {
 
 }
-void HandleClose(Channel* channel,Poller* poller)
+void HandleClose(Channel* channel)
 {
-    poller->RemoveChannel(channel->GetFd());
+    
 }
 void HandleError(Channel* channel)
 {
@@ -54,7 +55,7 @@ void HandleEvent(Channel* channel)
 {
     
 }
-void HandleListenRead(Socket* lisSocket,Poller* poller)
+void HandleListenRead(Socket* lisSocket,EventLoop* loop)
 {
     int fd =  Acceptor(lisSocket->GetSocket());
     if(fd  < 0)
@@ -64,15 +65,15 @@ void HandleListenRead(Socket* lisSocket,Poller* poller)
     }
     
     //创建Channel，添加事件管理，注册到Poller
-    Channel* channel = new Channel(fd);
+    Channel* channel = new Channel(fd,loop);
     channel->EnableRead();
     channel->EnableWrite();
     channel->SetReadCallback(std::bind(HandleRead,channel));
     channel->SetWriteCallback(std::bind(HandleWrite,channel));
-    channel->SetCloseCallback(std::bind(HandleClose,channel,poller));
+    channel->SetCloseCallback(std::bind(HandleClose,channel));
     channel->SetErrorCallback(std::bind(HandleError,channel));
     channel->SetEventCallback(std::bind(HandleEvent,channel));
-    poller->UpdateEvent(channel);    
+    
 }
 
 
@@ -80,45 +81,26 @@ int main()
 {
     
     Socket* lisSocket = new Socket();
-    Poller* poller = new Poller();
+    EventLoop* loop = new EventLoop();
+    
     std::vector<Channel*>* active = new std::vector<Channel*>();
     active->reserve(MAX_EVENTS);
     lisSocket->CreateSocket();
     lisSocket->Bind("0.0.0.0",8081); 
     lisSocket->CreateListenConnect();
-    Channel* lisChannel =  new Channel(lisSocket->GetSocket());
+    Channel* lisChannel =  new Channel(lisSocket->GetSocket(),loop);
 
     lisChannel->EnableRead();
     //bind函数里面的参数是对上文变量的拷贝，回调函数是对该拷贝的引用原文变量没有发生变化
-    lisChannel->SetReadCallback(std::bind(HandleListenRead,lisSocket,poller));
-    int ret = poller->UpdateEvent(lisChannel);
-    if(ret < 0)
-    {
-        ERR_LOG("Update event fail");
-    }
-    while(1)
-    {
-        //记得清除任务
-        active->clear();
-        int ret = poller->Poll(active);
-        if(ret == 0) 
-        { 
-            INF_LOG("No event happen!"); 
-        }
-        else if(ret == -1)
-        {
-            INF_LOG("The call was interrupted by a singal!");
-        }
-        else
-        {
-            
-            for(Channel* channel : *active)
-            {
-                channel->HandleEvent(); 
-            }
-        }
-        sleep(1);
-    }
-
+    lisChannel->SetReadCallback(std::bind(HandleListenRead,lisSocket,loop));
     
+    loop->Loop();
 }
+void EventLoop::RemoveChannel(Channel* channel) { _poller.RemoveChannel(channel->GetFd()); }
+void EventLoop::UpdateChannel(Channel* channel) { _poller.UpdateEvent(channel); }
+
+void Channel::SetEventCallback(EventCallback eventCallback) { _event_callback = eventCallback; _ptr->UpdateChannel(this); }
+void Channel::SetWriteCallback(EventCallback writeCallback) { _write_callback = writeCallback; _ptr->UpdateChannel(this); }
+void Channel::SetReadCallback(EventCallback readCallback) { _read_callback = readCallback; _ptr->UpdateChannel(this);}
+void Channel::SetCloseCallback(EventCallback closeCallback) { _close_callback = closeCallback; _ptr->UpdateChannel(this);}
+void Channel::SetErrorCallback(EventCallback errorCallback) { _error_callback = errorCallback; _ptr->UpdateChannel(this);}

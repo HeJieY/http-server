@@ -10,6 +10,7 @@
  * Copyright (c) 2026 by HeJieY, All Rights Reserved. 
  */
 #pragma once
+#include <memory>
 #include<sys/epoll.h>
 #include <asm-generic/socket.h>
 #include <cerrno>
@@ -23,6 +24,7 @@
 #include <cstdint>
 #include <sys/types.h>
 #include <unordered_map>
+#include <utility>
 #include<vector>
 #include<cstdint>
 #include<cassert>
@@ -31,8 +33,9 @@
 #include<arpa/inet.h>
 #include<unistd.h>
 #include<fcntl.h>
-#include<iostream>
-
+#include<thread>
+#include<sys/eventfd.h>
+#include<mutex>
 enum ExitCode
 {
     EPOLLFD_CREATE_ERROR = 1,
@@ -42,6 +45,8 @@ enum ExitCode
     EPOLL_CTL_ERROR,
     EPOLL_WAIT_ERROR,
     ACCEPT_ERROR,
+    WRITE_ERROR,
+    READ_ERROR,
 };
 
 #define BUFFER_SIZE 1024
@@ -66,6 +71,7 @@ enum ExitCode
 #define DBG_LOG(fmt, ...) LOG(DBG, fmt, ##__VA_ARGS__)
 #define ERR_LOG(fmt, ...) LOG(ERR, fmt, ##__VA_ARGS__)
 
+class EventLoop;    
 class Buffer
 {
 public:
@@ -353,11 +359,13 @@ public:
     }
 
 };
+class EventLoop;
 
 class Channel
 {
 private:
     int _socketfd;
+    EventLoop* _ptr;
     uint32_t _events; //表示的是某套接字要管理的事件
     uint32_t _revents;//表示的是某套接字哪些事件被触发了
     using EventCallback = std::function<void()>;
@@ -367,18 +375,18 @@ private:
     EventCallback _close_callback;
     EventCallback _event_callback;
 public:
-    Channel(int socketfd):_socketfd(socketfd){ _events = 0; _revents = 0; }
+    Channel(int socketfd,EventLoop* ptr):_socketfd(socketfd),_ptr(ptr) { _events = 0; _revents = 0; }
     Channel() {}
     ~Channel() {}
 
     int GetFd() { return _socketfd; }
     uint32_t GetEvent() { return _events; }
     
-    void SetEventCallback(EventCallback eventCallback) { _event_callback = eventCallback; }
-    void SetWriteCallback(EventCallback writeCallback) { _write_callback = writeCallback; }
-    void SetReadCallback(EventCallback readCallback) { _read_callback = readCallback; }
-    void SetCloseCallback(EventCallback closeCallback) { _close_callback = closeCallback; }
-    void SetErrorCallback(EventCallback errorCallback) { _error_callback = errorCallback; }
+    void SetEventCallback(EventCallback eventCallback);
+    void SetWriteCallback(EventCallback writeCallback);
+    void SetReadCallback(EventCallback readCallback) ;
+    void SetCloseCallback(EventCallback closeCallback);
+    void SetErrorCallback(EventCallback errorCallback) ;
     void CloseFd() { INF_LOG("Close  fd:%d",_socketfd); close(_socketfd); }
 
     void EnableRead() { _events|= EPOLLIN ;}
@@ -470,7 +478,7 @@ public:
     }
     int Poll(std::vector<Channel*>* active)
     {
-        int ret = epoll_wait(_epollfd, _events, MAX_EVENTS, 0);
+        int ret = epoll_wait(_epollfd, _events, MAX_EVENTS, 10);
         if(ret == 0)
         {
             return 0;
@@ -511,6 +519,97 @@ public:
     }
 };
 
+class EventLoop
+{
+private:
+    using Task = std::function<void()>;
 
+private:
+    std::vector<Task> _tasks;
+    int _eventfd;
+    Channel _eventfd_channel;
+    Poller _poller;
+    std::mutex _mtx;
+    std::thread::id _id;
+    
+    void EventFdCallBack()
+    {
+        uint64_t val;
+        int ret = read(_eventfd,&val,sizeof(val));
+        if(ret <= 0) 
+        {
+            ERR_LOG("Read error!");
+            exit(ExitCode::READ_ERROR);
+        }
+    }
+public:
+    EventLoop()
+        :_id(std::this_thread::get_id())
+        ,_eventfd(eventfd(0,EFD_NONBLOCK | EFD_CLOEXEC))
+        ,_eventfd_channel(_eventfd,this)
+    {        
+        _eventfd_channel.EnableRead();
+        _eventfd_channel.SetReadCallback(std::bind(&EventLoop::EventFdCallBack,this));
+    }
+    ~EventLoop()
+    {
+        
+    }
+    void UpdateChannel(Channel* channel);
+    void RemoveChannel(Channel* channel);
+    void WakeUpThread()
+    {
+        uint64_t val = 1;
+        int ret = write(_eventfd,&val,sizeof(val));
+        if(ret  < 0) 
+        { 
+            ERR_LOG("Write error!");
+            exit(ExitCode::WRITE_ERROR);
+        }
+    }
+    void RunInLoop(Task& task)
+    {
+       if(std::this_thread::get_id()  == _id)
+       {
+            task();
+       }
+       else 
+       {
+            QueueInLoop(task);
+       }
+    }
+    void  QueueInLoop(Task&  task)
+    {
+        {
+            std::lock_guard<std::mutex> mtx(_mtx);
+            _tasks.push_back(task);
+        }
+        WakeUpThread();
+    }
+    void Loop()
+    {
+        while(true)
+        {
+            std::vector<Channel*> active;
+            //1.先启动事件监控
+            _poller.Poll(&active);
+            //2.处理事件
+            for(Channel* connect : active)
+            {
+                connect->HandleEvent();
+            }
+            //3.执行_tasks的任务，涉及线程安全
+            //不循环处理_tasks这是为了线程不要长时间占有锁，影响效率
+            std::vector<Task> tasks;//内部指向空间为nullptr但是实例是存在的可以使用
+            {
+                std::lock_guard<std::mutex> mtx(_mtx);//这个是RAII类型的出了作用域会自动释放锁
+                std::swap(tasks,_tasks);//vector的swap是直接交换指针 
+            }
+                for(Task& t : tasks){ t(); }
+            }
+        }
+    bool IsInThread(){ return _id == std::this_thread::get_id(); }  
+};
 
-
+    
+    
