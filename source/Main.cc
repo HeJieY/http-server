@@ -96,11 +96,3 @@ int main()
     
     loop->Loop();
 }
-void EventLoop::RemoveChannel(Channel* channel) { _poller.RemoveChannel(channel->GetFd()); }
-void EventLoop::UpdateChannel(Channel* channel) { _poller.UpdateEvent(channel); }
-
-void Channel::SetEventCallback(EventCallback eventCallback) { _event_callback = eventCallback; _ptr->UpdateChannel(this); }
-void Channel::SetWriteCallback(EventCallback writeCallback) { _write_callback = writeCallback; _ptr->UpdateChannel(this); }
-void Channel::SetReadCallback(EventCallback readCallback) { _read_callback = readCallback; _ptr->UpdateChannel(this);}
-void Channel::SetCloseCallback(EventCallback closeCallback) { _close_callback = closeCallback; _ptr->UpdateChannel(this);}
-void Channel::SetErrorCallback(EventCallback errorCallback) { _error_callback = errorCallback; _ptr->UpdateChannel(this);}

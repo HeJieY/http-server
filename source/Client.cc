@@ -6,8 +6,11 @@
  * Copyright (c) 2026 by HeJieY, All Rights Reserved. 
  */
 #include"Server.hpp"
+#include<signal.h>
+
 int main()
 {
+    signal(SIGPIPE, SIG_IGN);
     Socket client;
     client.CreateSocket();
     client.CreateClientConnect("127.0.0.1", 8081);
@@ -16,7 +19,7 @@ int main()
     buffer= "你好";
     while(true)
     {
-        ssize_t ret = client.Send(&buffer[0], BUFFER_SIZE);
+        ssize_t ret = client.Send(&buffer[0], buffer.size());
         if(ret < 0)
         {
             ERR_LOG("Send error!");

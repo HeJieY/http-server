@@ -200,7 +200,7 @@ public:
         if(_socketfd < 0) 
         {
             ERR_LOG("Socketfd create error!"); 
-            return ExitCode::CREATE_SOCKET_ERROR;
+            exit(ExitCode::CREATE_SOCKET_ERROR);
         }
         return _socketfd;
     }
@@ -312,8 +312,12 @@ public:
         if(n < 0)
         {
             if(errno ==EAGAIN || errno == EWOULDBLOCK) { return -1; }
-            else if(n == EINTR) { return -2; }
-            else { return n; }
+            else if(errno == EINTR) { return -2; }
+            else 
+            { 
+                ERR_LOG("Send ");
+                return -3;
+            }
         }
         else
         {
@@ -387,15 +391,15 @@ public:
     void SetReadCallback(EventCallback readCallback) ;
     void SetCloseCallback(EventCallback closeCallback);
     void SetErrorCallback(EventCallback errorCallback) ;
-    void CloseFd() { INF_LOG("Close  fd:%d",_socketfd); close(_socketfd); }
+    void CloseFd();
 
-    void EnableRead() { _events|= EPOLLIN ;}
-    void EnableWrite() { _events |= EPOLLOUT; }
-    void DisableRead() { _events &= ~EPOLLIN; }
-    void DisableWrite() { _events &= ~EPOLLOUT; }
-    void DisableAll() { _events = 0; }
-    void RemoveEvent(uint32_t event) { _events &= ~event; }
-    void SetRevents(uint32_t revents) { _revents = revents; }
+    void EnableRead();
+    void EnableWrite();
+    void DisableRead();
+    void DisableWrite();
+    void DisableAll();
+    void RemoveEvent(uint32_t event);
+    void SetRevents(uint32_t revents);
     void HandleEvent()
     {
         if((_revents & EPOLLIN) || (_revents & EPOLLRDHUP) || (_revents & EPOLLPRI))
@@ -474,7 +478,6 @@ public:
             ERR_LOG("Epoll control error!");
             exit(ExitCode::EPOLL_CTL_ERROR);
         }
-        RemoveChannel(channel->GetFd());
     }
     int Poll(std::vector<Channel*>* active)
     {
@@ -508,11 +511,9 @@ public:
             return ret;
         }
     }
-
+    //TODO:这里没有释放fd，后面书写时记得补上
     bool RemoveChannel(int fd)
     {
-        close(fd);
-        INF_LOG("Close  fd:%d",fd);
         delete _map[fd];
         _map.erase(fd);
         return true;
@@ -532,15 +533,23 @@ private:
     std::mutex _mtx;
     std::thread::id _id;
     
-    void EventFdCallBack()
+    ssize_t EventFdCallBack()
     {
         uint64_t val;
         int ret = read(_eventfd,&val,sizeof(val));
         if(ret <= 0) 
         {
-            ERR_LOG("Read error!");
-            exit(ExitCode::READ_ERROR);
+            if(errno == EAGAIN || errno == EINTR)
+            {
+                return 0;
+            }
+            else 
+            {
+                ERR_LOG("Read error");
+                exit(ExitCode::READ_ERROR);
+            }
         }
+        return ret;
     }
 public:
     EventLoop()
@@ -612,4 +621,19 @@ public:
 };
 
     
-    
+inline void EventLoop::RemoveChannel(Channel* channel) { _poller.RemoveChannel(channel->GetFd()); }
+inline void EventLoop::UpdateChannel(Channel* channel) { _poller.UpdateEvent(channel); }
+
+inline void Channel::SetEventCallback(EventCallback eventCallback) { _event_callback = eventCallback; _ptr->UpdateChannel(this); }
+inline void Channel::SetWriteCallback(EventCallback writeCallback) { _write_callback = writeCallback; _ptr->UpdateChannel(this); }
+inline void Channel::SetReadCallback(EventCallback readCallback) { _read_callback = readCallback; _ptr->UpdateChannel(this);}
+inline void Channel::SetCloseCallback(EventCallback closeCallback) { _close_callback = closeCallback; _ptr->UpdateChannel(this);}
+inline void Channel::SetErrorCallback(EventCallback errorCallback) { _error_callback = errorCallback; _ptr->UpdateChannel(this);}
+inline void Channel::EnableRead() { _events|= EPOLLIN ;_ptr->UpdateChannel(this); }
+inline void Channel::EnableWrite() { _events |= EPOLLOUT; _ptr->UpdateChannel(this); }
+inline void Channel::DisableRead() { _events &= ~EPOLLIN; _ptr->UpdateChannel(this);  }
+inline void Channel::DisableWrite() { _events &= ~EPOLLOUT; _ptr->UpdateChannel(this); }
+inline void Channel::DisableAll() { _events = 0; _ptr->UpdateChannel(this); }
+inline void Channel::RemoveEvent(uint32_t event) { _events = event; _ptr->UpdateChannel(this); }
+inline void Channel::SetRevents(uint32_t revents) { _revents = revents; _ptr->UpdateChannel(this); }
+inline void Channel::CloseFd() { INF_LOG("Close  fd:%d",_socketfd); close(_socketfd); _ptr->RemoveChannel(this); }
