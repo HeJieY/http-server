@@ -4,34 +4,21 @@
 ================================================================================
 
 时间        :
-涉及文件    :
 问题(bug)   :
 原因        :
-修改内容    :
-验证        :
-遗留/待办   :
-备注        :
-
 --------------------------------------------------------------------------------
 
 时间        : 2026-10-14 09:30
-涉及文件    : http-v1/TimeWheel.cpp
 问题(bug)   : Reflash 延长寿命不生效; 连续调用两次仍按初值计算, 最终死亡时间不变
 原因        : Reflash 计算新槽后没有把结果写回 _deadtick; 且 TimeTask 初始化 _deadtick=timeout,
               与 AddTask 实际落槽 (_ticks+timeout)%_capacity 不一致(手轮转过时错位)
-修改内容    : 1) TimeTask 增加 SetDeadTick, AddTask 把真实槽 pos 传入构造;
-              2) Reflash 中 ptr->SetDeadTick(pos) 回写
-验证        : 模拟测试: cap=10 timeout=8 delay=3, 第5/6秒各 Reflash 一次 -> 死亡时间 8 -> 11 -> 14 ✓
-遗留/待办   : Reflash 仍需护栏: 仅当 (剩余槽距 + delay) < capacity 时才能延长, 否则提前一轮被扫掉
-备注        : _deadtick 存的是槽下标(0..capacity-1), 命名可改为 _dead_slot 更贴切
 
 --------------------------------------------------------------------------------
 
-时间        :   2026-11-5
-涉及文件    :   Server.hpp Main.cc   
+时间        :   2026-11-5 
 问题(bug)   :   主线程莫名卡死以及回调HandleListenRead假处理的问题
 原因        :   bind函数里的参数写的是上文变量的拷贝，所以回调里面的引用会是对该拷贝的引用，导致正文变量未被修改;正文处理过的事件未进行清楚操作；
-修改内容    :   lisChannel->SetReadCallback(std::bind(HandleListenRead,std::ref(lisSocket),std::ref(poller)));
+
 
 
 --------------------------------------------------------------------------------
@@ -39,5 +26,52 @@
 涉及文件    :   Server.hpp Main.cc   
 问题(bug)   :
 1.client客户端没有忽略SIGPIPE信号，会导致收到后直接终止进程->客户端忽略该信号的处理singal(SIGPIPE,SIGIGE);
+
+--------------------------------------------------------------------------------
+时间        :   2026-11-12 16:12
+涉及文件    :   Server.hpp Main.cc
+问题(bug)   :
+1. 新连接无条件 EnableWrite，HandleWrite 为空，EPOLLOUT 水平触发导致事件循环空转；
+2. Channel 的 Set*Callback / SetRevents 内部调用 UpdateChannel，Poller::Poll 每处理一个事件都会多做一次 epoll_ctl(MOD) 并打印日志；
+3. CloseFd 先 close 再 Remove，RemoveListen 对已关闭的 fd 做 epoll_ctl(DEL) 失败后 exit；
+4. RemoveMapDate 中 delete _map[fd] 会在 HandleRead/HandleClose 回调路径里 delete 当前 Channel，存在 UAF；
+5. CreateListenConnect 由 bool 改为 int 后，CreateServerConnect 仍用 == false 判断，listen 成功返回 0 会误 exit；
+6. Main 原先没有检查 Bind / CreateListenConnect 的返回值，bind 失败后可能继续 listen 到随机端口。
+
+原因        :
+1. EPOLLOUT 是水平触发，HandleWrite 为空时每次 epoll_wait 都会立即返回；
+2. SetRevents 只应记录哪些事件被触发，不应修改 epoll 关注的事件；回调 setter 也不应隐式 Update；
+3. fd 关闭后仍对其调用 epoll_ctl(DEL)，内核返回 EBADF/ENOENT，RemoveListen 中直接 exit；
+4. Poller 只应管理 epoll，不应在回调路径里 delete Channel；
+5. bool 和 int 返回值语义混用；
+6. 系统调用返回值没有统一处理，bind 失败不等于 listen 失败。
+
+修改内容    :
+1. Channel::Set*Callback 改为只保存回调，不再调用 UpdateChannel；
+2. Channel 增加 Update() / Remove()，Enable/Disable/RemoveEvent 显式调用 Update()；
+3. SetRevents 只执行 _revents = revents；RemoveEvent 改为 _events &= ~event；
+4. Main 中注释掉 channel->EnableWrite()，保留注释：“会一直导致一直空转”；
+5. CloseFd 改为先 Remove()（epoll_ctl DEL + map.erase）再 close，并增加 _socketfd < 0 判断，保留注释：“如果一次事件里 HandleRead 已经关闭了连接，后面 EPOLLHUP 又调用 HandleClose，就会第二次 CloseFd”；
+6. RemoveMapDate 先注释掉 delete，只保留 map.erase，保留注释：“这里先不能删除因为这里是又channel发起的close，暂时先不处理”；
+7. CreateListenConnect 改为返回 listen() 的结果；Main 中 Bind 和 CreateListenConnect 都改用 <0 判断；Bind 增加注释：“//Return: <0 is error”；
+8. Main 删除未使用的 active vector，整理头文件和格式；
+9. HandleRead 的接收缓冲从 std::string reserve 改为 char buffer[1024]，暂时按每次 recv 打印，保留 resize/reserve/cout 的注释。
+
+验证        :
+1. g++ -std=c++17 -pthread source/Main.cc 编译通过；
+2. 正常客户端连接、发送、断开，服务器保持运行；
+3. 连续两个客户端连接，服务器保持运行。
+
+遗留/待办   :
+1. CloseFd 关闭后还没有把 _socketfd 置 -1，重复 CloseFd 的守卫还不完整；
+2. CreateServerConnect 中 if (CreateListenConnect() == false) 仍需改成 < 0；
+3. Main 还没有调用 SetReuseAddress(1)，8081 进入 TIME_WAIT 后重启可能 Bind error；
+4. HandleRead 的完整读取/拼接和 recv 异常处理留待后续缓冲区/业务模块接入后重写，本次先保留临时打印；
+5. EventLoop::_id 初始化顺序还有 -Wreorder 警告。
+
+备注        :
+1. HandleRead 中保留的注释：“resize：改变的是实际大小，改不改变capacity取决于resize与capacity的大小情况，resize是扩充到多大不是加多大的概念，resize对于新添加的元素会填充初始值0”；“reserve：改变的是capacity，默认不会初始化内容”；“cout：打印的是string的size大小”；
+2. HandleRead 中已注明：“这么处理也不对你怎么知道读完了？？应该先把数据存起来，完全读完之后或者记录下i下次从i开始读，但是先不改了，等后面引入缓冲区再解决吧”；
+3. recv 数据的完整读取、拼接和异常处理后续模块再做，本次不展开。
 
 --------------------------------------------------------------------------------
