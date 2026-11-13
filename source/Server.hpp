@@ -39,6 +39,7 @@
 #include <mutex>
 #include<time.h>
 #include<memory>
+static int id = 1; //TODO  这里采用全局变量肯定是不对的，但先测试把代码跑起来，后续完整了再处理这块
 enum ExitCode
 {
     EPOLLFD_CREATE_ERROR = 1,
@@ -52,6 +53,7 @@ enum ExitCode
     READ_ERROR,
     RECV_ERROR,
     TIMERFD_CREATE_ERROR,
+    NOT_FIND_TIMERTASK,
 };
 
 #define BUFFER_SIZE 1024
@@ -399,6 +401,7 @@ class EventLoop;
 class Channel
 {
 private:
+    
     int _socketfd;
     EventLoop *_ptr;
     uint32_t _events;  // 表示的是某套接字要管理的事件
@@ -411,6 +414,7 @@ private:
     EventCallback _event_callback;
 
 public:
+    int _id;// 临时添加的id用于测试TimeWheel
     Channel(int socketfd, EventLoop *ptr) : _socketfd(socketfd), _ptr(ptr)
     {
         _events = 0;
@@ -474,7 +478,12 @@ public:
         INF_LOG("Close  fd:%d", _socketfd); 
         _socketfd = -1;
     }    
-
+    //临时添加的成员函数
+    void SetId(uint64_t id)
+    {
+        _id = id;
+    }
+    
     void HandleEvent()
     {
         // 关于EPOLLHUP和EPOLLREDHUP
@@ -496,6 +505,7 @@ public:
         {
             if (_close_callback) _close_callback();
         }
+        if(_event_callback) _event_callback();
     }
 };
 
@@ -511,6 +521,7 @@ private:
         struct epoll_event event;
         event.data.fd = channel->GetFd();
         event.events = channel->GetEvent();
+
         INF_LOG("Add a event");
         return epoll_ctl(_epollfd, op, channel->GetFd(), &event);
     }
@@ -650,7 +661,7 @@ public:
     void SetDeadTick(uint32_t dead_index) { _dead_index = dead_index; }
 };
 
-
+class EventLoop;
 class TimeWheel
 {
     //C++ 成员按照声明顺序初始化调用构造,按照声明顺序的逆序调用析构
@@ -660,10 +671,13 @@ private:
     std::unordered_map<uint64_t,WTaskPtr> _map; //表示id与任务之间的联系
     std::vector<std::vector<STaskPtr>> _tasks;  //表示所有待办任务
     uint64_t _capacity;                         //表示时间轮的最大容量
-    uint32_t _ticks;                            //表示秒针 
+    uint32_t _ticks;                            //表示秒针
     EventLoop* _ptr;                            //EventLoop* 回指指针
     int _timerfd;
+    std::shared_ptr<Channel> _timer_channel;
+
 private:
+
     bool RemoveTask(uint64_t id)
     {
        auto it = _map.find(id);
@@ -676,35 +690,20 @@ private:
            return false;
        }
     }
-public:
-    TimeWheel(uint64_t  capacity,EventLoop* ptr)
-        :_capacity(capacity),_ticks(0),_tasks(capacity),_ptr(ptr),_timerfd(-1){ }
-    ~TimeWheel() { }
-    //  关于TFD_CLOEXEC:子进程会对父进程的虚拟地址空间进行继承（父子进程同样的页表），只有当对父进程的数据发生操作的时候会发生
-    //写时拷贝，修改页表指向其他物理内存地址，子进程退出时会清理进程资源，会保存的时进程退出码（保存在PCB之中task_struct），需要等父进
-    //程回收如果子进程继承了fd，文件描述符的涉及是引用计数，fork时其引用计数会+1，子进程不知道该fd的作用可能就不释放，导致fd凭空+1，后续父进程也关不掉了
 
-    //sec  : 启动后多少秒之后生效
-    //cycle: 再此之后的执行周期为多少秒
-    void CreateTimerFd(uint32_t sec,uint32_t cycle)
+   void AddTaskInLoop(const uint32_t id,uint32_t timeout,uint32_t delay,const To_Death_Cb& cb)
     {
-        //进程调用 exec() 启动新程序时，内核自动关闭该 fd，防止 fd 泄漏给子进程。
-        _timerfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
-        if(_timerfd < 0)
-        {
-            ERR_LOG("Timerfd create error!");
-            exit(ExitCode::TIMERFD_CREATE_ERROR);
-        }
-        struct itimerspec lti;
-        memset(&lti, 0, sizeof(struct itimerspec));
-        //这个表示下个重复周期，成员表示纳秒和秒
-        lti.it_interval.tv_sec = cycle;//
-        lti.it_interval.tv_nsec = 0;
-        lti.it_value.tv_nsec = 0;
-        lti.it_value.tv_sec = sec;
-        timerfd_settime(_timerfd, 0, &lti, NULL);
+        //找到对应位置,添加要执行的任务去tasks中
+        uint64_t pos = (_ticks + timeout) % _capacity;
+        STaskPtr ptr = std::make_shared<TimeTask>(id,timeout,delay,pos,cb);
+        ptr->SetRelease(std::bind(&TimeWheel::RemoveTask,this,id));
+        //这么写是不对的c++标准规定:非静态成员函数(不含this的)函数名不会自动强转成函数指针
+        // ptr->SetRelease(std::bind(RemoveTask,this,id));
+        _tasks[pos].push_back(ptr);
+        // 添加到_map中加以管理
+        _map[id] = WTaskPtr(ptr);
     }
-    int Reflash(uint64_t id)
+    void ReflashInLoop(uint64_t id)
     {
         auto it = _map.find(id);  
         if(it != _map.end())
@@ -720,31 +719,101 @@ public:
         }
         else
         {
-            return -1;
-        }
-        return 0;
+            //不应该出现的错误
+            ERR_LOG("Not find timertaks");
+            exit(ExitCode::NOT_FIND_TIMERTASK);
+       } 
     }
-    bool AddTask(const uint64_t id,const uint32_t timeout,uint32_t delay,const To_Death_Cb& cb)
+
+    void CreateTimerFdInLoop(uint32_t sec,uint32_t cycle)
     {
-        //找到对应位置,添加要执行的任务去tasks中
-        uint64_t pos = (_ticks + timeout) % _capacity;
-        STaskPtr ptr = std::make_shared<TimeTask>(id,timeout,delay,pos,cb);
-        ptr->SetRelease(std::bind(&TimeWheel::RemoveTask,this,id));
-        //这么写是不对的c++标准规定:非静态成员函数(不含this的)函数名不会自动强转成函数指针
-        // ptr->SetRelease(std::bind(RemoveTask,this,id));
-        _tasks[pos].push_back(ptr);
-        // 添加到_map中加以管理
-        _map[id] = WTaskPtr(ptr);
-        
-        return true;
+         //进程调用 exec() 启动新程序时，内核自动关闭该 fd，防止 fd 泄漏给子进程。
+        struct itimerspec lti;
+        memset(&lti, 0, sizeof(struct itimerspec));
+        //这个表示下个重复周期，成员表示纳秒和秒
+        lti.it_interval.tv_sec = cycle;//
+        lti.it_interval.tv_nsec = 0;
+        lti.it_value.tv_nsec = 0;
+        lti.it_value.tv_sec = sec;
+        timerfd_settime(_timerfd, 0, &lti, NULL);
     }
-    bool TickMove()
+public:
+    TimeWheel(uint64_t  capacity,EventLoop* ptr)
+        :_capacity(capacity)
+        ,_ticks(0)
+        ,_tasks(capacity)
+        ,_ptr(ptr)
+        ,_timerfd(_timerfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC))
+        ,_timer_channel(std::make_shared<Channel>(_timerfd,_ptr))
+        {
+            _timer_channel->EnableRead();
+            _timer_channel->SetReadCallback(std::bind(&TimeWheel::OnTime,this));
+            if(_timerfd < 0)
+            {
+                ERR_LOG("Timerfd create error!");
+                exit(ExitCode::TIMERFD_CREATE_ERROR);
+            }
+            
+        }
+    ~TimeWheel() 
+    { 
+        
+    }
+
+    //  关于TFD_CLOEXEC:子进程会对父进程的虚拟地址空间进行继承（父子进程同样的页表），只有当对父进程的数据发生操作的时候会发生
+    //写时拷贝，修改页表指向其他物理内存地址，子进程退出时会清理进程资源，会保存的时进程退出码（保存在PCB之中task_struct），需要等父进
+    //程回收如果子进程继承了fd，文件描述符的涉及是引用计数，fork时其引用计数会+1，子进程不知道该fd的作用可能就不释放，导致fd凭空+1，后续父进程也关不掉了
+    //时间到了执行任务
+    void OnTime()
+    {
+        ReadTimer();
+        TickMove();
+    }
+
+    //sec  : 启动后多少秒之后生效
+    //cycle: 再此之后的执行周期为多少秒
+    void CreateTimerFd(uint32_t sec,uint32_t cycle);
+
+
+    //读取timerfd的内容
+    void ReadTimer()
+    {
+        while(1)
+        {
+            uint64_t exp = 0;
+            ssize_t ret = read(_timerfd,&exp,sizeof(uint64_t));
+            if(ret == sizeof(uint64_t))
+            {
+                //执行任务
+                return;
+            }
+            else if(ret < 0 && errno == EINTR)
+            {
+                //信号中断可重试
+                continue;
+            }
+            else if (ret < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return; 
+            //发生不应该发生的错误，直接退出即可
+            ERR_LOG("Read error!"); 
+            exit(ExitCode::READ_ERROR);
+
+        }
+    }
+
+    //刷新事件的生存时间
+    void Reflash(uint64_t id);
+    
+    //添加一个任务
+    void AddTask(const uint64_t id,const uint32_t timeout,uint32_t delay,const To_Death_Cb& cb);
+
+    //tick增加1s,并且处理到时间了的任务
+    void TickMove()
     {
         _tasks[_ticks].clear();
         _ticks = (_ticks+1) % _capacity;
-        return true;
     }
 };
+
 class EventLoop
 {
 private:
@@ -757,6 +826,7 @@ private:
     Poller _poller;
     std::mutex _mtx;
     std::thread::id _id;
+    TimeWheel _time_wheel;
 
     ssize_t EventFdCallBack()
     {
@@ -777,8 +847,11 @@ private:
         return ret;
     }
 public:
-    EventLoop()
-        : _id(std::this_thread::get_id()), _eventfd(eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)), _eventfd_channel(_eventfd, this)
+    EventLoop(uint64_t timerWheelCapacity)
+        : _id(std::this_thread::get_id())
+        , _eventfd(eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC))
+        , _eventfd_channel(_eventfd, this)
+        ,_time_wheel(timerWheelCapacity, this)
     {
         _eventfd_channel.EnableRead();
         _eventfd_channel.SetReadCallback(std::bind(&EventLoop::EventFdCallBack, this));
@@ -798,7 +871,7 @@ public:
             exit(ExitCode::WRITE_ERROR);
         }
     }
-    void RunInLoop(Task &task)
+    void RunInLoop(const Task &task)
     {
         if (std::this_thread::get_id() == _id)
         {
@@ -809,7 +882,7 @@ public:
             QueueInLoop(task);
         }
     }
-    void QueueInLoop(Task &task)
+    void QueueInLoop(const Task &task)
     {
         {
             std::lock_guard<std::mutex> mtx(_mtx);
@@ -847,8 +920,36 @@ public:
         }
     }
     bool IsInThread() { return _id == std::this_thread::get_id(); }
+
+    //时间轮相关
+
+    void AddTimerTask(uint32_t id,const uint32_t timeout,uint32_t delay,const Task& cb)
+    {
+        _time_wheel.AddTask(id, timeout,delay, cb);   
+    }
+    void ReflashTimer(uint64_t id)
+    {
+        _time_wheel.Reflash(id);
+    }
+    void CreateTimerFd(uint32_t sec, uint32_t cycle)
+    {
+        _time_wheel.CreateTimerFd(sec,cycle);
+    }
 };
 
 inline void Channel::Update() { _ptr->UpdateChannel(this); }
 inline void Channel::Remove() { _ptr->RemoveChannel(this); }
-    
+
+
+inline void TimeWheel::AddTask(const uint64_t id,const uint32_t timeout,uint32_t delay,const To_Death_Cb& cb) 
+{
+    _ptr->RunInLoop(std::bind(&TimeWheel::AddTaskInLoop,this,id,timeout,delay,cb));
+}
+inline void TimeWheel::Reflash(uint64_t id) 
+{
+    _ptr->RunInLoop(std::bind(&TimeWheel::ReflashInLoop,this,id));
+}
+inline void TimeWheel::CreateTimerFd(uint32_t sec,uint32_t cycle)
+{
+    _ptr->RunInLoop(std::bind(&TimeWheel::CreateTimerFdInLoop,this,sec,cycle)); 
+}

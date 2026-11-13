@@ -29,7 +29,6 @@ void HandleRead(Channel *channel)
     //resize ：改变的是实际大小，改不改变capacity取决于resize与capacity的大小情况，resize是扩充到多大不是加多大的概念，resize对于新添加的元素会填充初始值0
     //reserve：改变的是capacity，默认不会初始化内容
     //cout   ：打印的是string的size大小
-    int total = 0;
     char buffer[1024] = {0};
     while (1)
     {
@@ -63,11 +62,8 @@ void HandleRead(Channel *channel)
         else
         {
             //这么处理也不对你怎么知道读完了？？应该先把数据存起来，完全读完之后或者记录下i下次从i开始读，但是先不改了，等后面引入缓冲区再解决吧
-            total += ret;
-            for(int i=0;i<total;i++)
-            {
-                printf("%c",buffer[i]);
-            }
+            fwrite(buffer, 1, ret, stdout);
+            fflush(stdout);
         }
        
     }
@@ -92,9 +88,9 @@ void HandleError(Channel *channel)
 {
     //错误处理具体到后面业务再说
 }
-void HandleEvent(Channel *channel)
+void HandleEvent(Channel *channel, EventLoop *loop)
 {
-    //等待时间轮整合后再写
+    loop->ReflashTimer(channel->_id);
 }
 void HandleListenRead(Socket *lisSocket, EventLoop *loop)
 {
@@ -104,7 +100,12 @@ void HandleListenRead(Socket *lisSocket, EventLoop *loop)
         ERR_LOG("Accept error!");
         exit(ExitCode::ACCEPT_ERROR);
     }
-
+    //添加到TimerWheel中用于管理连接生命周期
+    //TODO:如果在这里为他绑定了关闭的函数，那么当epoll接受到关闭信号之后，epoll调用HandleClose可能就释放了，应该怎么办呢？,估计和后面连接模块有关暂时不做处理先跑起来
+    loop->AddTimerTask(id,5,5,std::bind([fd](){
+        INF_LOG("Close fd:%d",fd);
+        close(fd);
+    }));
     // 创建Channel，添加事件管理，注册到Poller
     Channel *channel = new Channel(fd, loop);
     channel->EnableRead();
@@ -113,15 +114,17 @@ void HandleListenRead(Socket *lisSocket, EventLoop *loop)
     channel->SetWriteCallback(std::bind(HandleWrite, channel));
     channel->SetCloseCallback(std::bind(HandleClose, channel));
     channel->SetErrorCallback(std::bind(HandleError, channel));
-    channel->SetEventCallback(std::bind(HandleEvent, channel));
+    channel->SetEventCallback(std::bind(HandleEvent,channel,loop));
+    channel->SetId(id);
+    id++;
 }
 
 int main()
 {
 
     Socket *lisSocket = new Socket();
-    EventLoop *loop = new EventLoop();
-
+    EventLoop *loop = new EventLoop(60);
+    loop->CreateTimerFd(1, 1);
     lisSocket->CreateSocket();
     lisSocket->SetReuseAddress(1);
     if (lisSocket->Bind("0.0.0.0", 8081) < 0)
